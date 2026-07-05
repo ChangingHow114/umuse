@@ -1,0 +1,52 @@
+# U Muse
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtualenv
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# ML Models (large files) — 通过程序自动下载
+assets/models/*
+!assets/models/download_checks.json
+!assets/models/*.yaml
+scripts/models/*
+
+# Project outputs
+output/
+temp/
+
+# Output files (但保留 tests/ 下的测试素材)
+*.wav
+*.mp3
+*.mid
+*.pdf
+*.ly
+*.mxl
+*.musicxml
+!tests/**/*.wav
+!tests/**/*.mp3
+!tests/**/*.mid
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# macOS
+*.app
+
+# Windows
+*.exe
+
+# LilyPond 系统依赖 (Mac 用 brew, Windows 用 winget 安装)
+lilypond/

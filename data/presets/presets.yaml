@@ -1,0 +1,357 @@
+version: 1
+preset_count: 20
+presets:
+- name: Grand Piano - Concert Bright
+  category: acoustic_piano
+  instrument: piano
+  description: 明亮的大三角钢琴, 适合古典/独奏
+  tags:
+  - 钢琴
+  - 三角钢琴
+  - bright
+  - classical
+  - concert
+  params:
+    brightness: 0.75
+    warmth: 0.4
+    attack: 0.3
+    sustain: 0.7
+    body: 0.6
+  reference_audio: ''
+- name: Grand Piano - Warm Jazz
+  category: acoustic_piano
+  instrument: piano
+  description: 温暖的爵士钢琴, 中低频饱满
+  tags:
+  - 钢琴
+  - 爵士
+  - warm
+  - jazz
+  - mellow
+  params:
+    brightness: 0.35
+    warmth: 0.75
+    attack: 0.4
+    sustain: 0.55
+    body: 0.7
+  reference_audio: ''
+- name: Electric Piano - Rhodes Classic
+  category: electric_piano
+  instrument: piano
+  description: 经典 Rhodes 电钢琴, 铃铛般的音头
+  tags:
+  - 电钢琴
+  - rhodes
+  - bell
+  - vintage
+  - soul
+  params:
+    brightness: 0.55
+    warmth: 0.55
+    attack: 0.45
+    sustain: 0.6
+    body: 0.5
+  reference_audio: ''
+- name: Electric Piano - Wurlitzer
+  category: electric_piano
+  instrument: piano
+  description: Wurlitzer 电钢琴, 更有颗粒感
+  tags:
+  - 电钢琴
+  - wurlitzer
+  - gritty
+  - bark
+  - retro
+  params:
+    brightness: 0.6
+    warmth: 0.45
+    attack: 0.55
+    sustain: 0.5
+    body: 0.55
+  reference_audio: ''
+- name: Organ - Hammond B3 Clean
+  category: organ
+  instrument: piano
+  description: Hammond B3 风琴, 清澈音色
+  tags:
+  - 风琴
+  - hammond
+  - clean
+  - gospel
+  - rock
+  params:
+    brightness: 0.5
+    warmth: 0.5
+    attack: 0.2
+    sustain: 0.8
+    body: 0.65
+  reference_audio: ''
+- name: Acoustic Guitar - Steel String Bright
+  category: acoustic_guitar
+  instrument: guitar
+  description: 明亮的钢弦原声吉他, 适合流行/民谣
+  tags:
+  - 原声吉他
+  - 钢弦
+  - bright
+  - folk
+  - pop
+  - fingerstyle
+  params:
+    brightness: 0.7
+    warmth: 0.35
+    attack: 0.65
+    sustain: 0.4
+    body: 0.5
+  reference_audio: ''
+- name: Acoustic Guitar - Nylon Mellow
+  category: acoustic_guitar
+  instrument: guitar
+  description: 温暖的尼龙弦古典吉他
+  tags:
+  - 古典吉他
+  - 尼龙弦
+  - mellow
+  - classical
+  - fingerstyle
+  params:
+    brightness: 0.3
+    warmth: 0.7
+    attack: 0.35
+    sustain: 0.55
+    body: 0.6
+  reference_audio: ''
+- name: Electric Guitar - Clean Tube Amp
+  category: clean_guitar
+  instrument: guitar
+  description: 干净的电子管音箱清音, 轻微压缩感
+  tags:
+  - 电吉他
+  - 清音
+  - clean
+  - tube
+  - blues
+  - pop
+  params:
+    brightness: 0.55
+    warmth: 0.5
+    attack: 0.6
+    sustain: 0.5
+    body: 0.5
+  reference_audio: ''
+- name: Electric Guitar - Classic Rock Overdrive
+  category: distorted_guitar
+  instrument: guitar
+  description: 经典摇滚过载音色, 中频突出
+  tags:
+  - 电吉他
+  - 过载
+  - rock
+  - overdrive
+  - crunch
+  - blues
+  params:
+    brightness: 0.5
+    warmth: 0.4
+    attack: 0.6
+    sustain: 0.7
+    body: 0.55
+  reference_audio: ''
+- name: Electric Guitar - High Gain Metal
+  category: distorted_guitar
+  instrument: guitar
+  description: 高增益金属音色, 低频紧实
+  tags:
+  - 电吉他
+  - 金属
+  - high gain
+  - metal
+  - distortion
+  - heavy
+  params:
+    brightness: 0.65
+    warmth: 0.3
+    attack: 0.7
+    sustain: 0.85
+    body: 0.7
+  reference_audio: ''
+- name: Bass - Fingerstyle Round
+  category: bass_guitar
+  instrument: bass
+  description: 手指弹奏贝斯, 圆润温暖
+  tags:
+  - 贝斯
+  - 指弹
+  - round
+  - warm
+  - fingerstyle
+  - r&b
+  params:
+    brightness: 0.3
+    warmth: 0.7
+    attack: 0.35
+    sustain: 0.6
+    body: 0.75
+  reference_audio: ''
+- name: Bass - Slap Funk
+  category: bass_guitar
+  instrument: bass
+  description: Slap 贝斯, 高频明亮有冲击力
+  tags:
+  - 贝斯
+  - slap
+  - funk
+  - bright
+  - percussive
+  - pop
+  params:
+    brightness: 0.75
+    warmth: 0.25
+    attack: 0.8
+    sustain: 0.3
+    body: 0.55
+  reference_audio: ''
+- name: Bass - Synth Deep Sub
+  category: synth_bass
+  instrument: bass
+  description: 深沉的合成器低音, 808 风格
+  tags:
+  - 合成器贝斯
+  - '808'
+  - sub
+  - deep
+  - trap
+  - electronic
+  params:
+    brightness: 0.15
+    warmth: 0.85
+    attack: 0.4
+    sustain: 0.65
+    body: 0.95
+  reference_audio: ''
+- name: Bass - Pick P-Bass Rock
+  category: bass_guitar
+  instrument: bass
+  description: 拨片弹 P-Bass, 经典摇滚贝斯音色
+  tags:
+  - 贝斯
+  - 拨片
+  - p-bass
+  - rock
+  - pick
+  - driving
+  params:
+    brightness: 0.45
+    warmth: 0.5
+    attack: 0.65
+    sustain: 0.5
+    body: 0.65
+  reference_audio: ''
+- name: Synth Lead - Saw Wave Bright
+  category: synth_lead
+  instrument: synth
+  description: 明亮的锯齿波主音, EDM/Pop
+  tags:
+  - 合成器
+  - lead
+  - saw
+  - bright
+  - edm
+  - pop
+  params:
+    brightness: 0.8
+    warmth: 0.2
+    attack: 0.25
+    sustain: 0.75
+    body: 0.45
+  reference_audio: ''
+- name: Synth Pad - Warm Analog Strings
+  category: synth_pad
+  instrument: synth
+  description: 温暖的模拟合成器铺底
+  tags:
+  - 合成器
+  - pad
+  - analog
+  - warm
+  - strings
+  - ambient
+  params:
+    brightness: 0.25
+    warmth: 0.8
+    attack: 0.5
+    sustain: 0.75
+    body: 0.6
+  reference_audio: ''
+- name: Synth - Pluck FM Bell
+  category: synth_lead
+  instrument: synth
+  description: FM 合成器钟声拨弦音色
+  tags:
+  - 合成器
+  - pluck
+  - fm
+  - bell
+  - digital
+  - pop
+  params:
+    brightness: 0.7
+    warmth: 0.25
+    attack: 0.1
+    sustain: 0.35
+    body: 0.35
+  reference_audio: ''
+- name: Strings - Orchestral Section
+  category: strings
+  instrument: synth
+  description: 管弦乐弦乐组, 柔美饱满
+  tags:
+  - 弦乐
+  - orchestral
+  - strings
+  - legato
+  - cinematic
+  - classical
+  params:
+    brightness: 0.4
+    warmth: 0.65
+    attack: 0.55
+    sustain: 0.7
+    body: 0.6
+  reference_audio: ''
+- name: Brass - Pop Horn Section
+  category: brass
+  instrument: synth
+  description: 流行铜管组, 明亮有力
+  tags:
+  - 铜管
+  - brass
+  - horns
+  - pop
+  - bright
+  - punchy
+  params:
+    brightness: 0.75
+    warmth: 0.35
+    attack: 0.6
+    sustain: 0.45
+    body: 0.6
+  reference_audio: ''
+- name: Woodwinds - Flute Legato
+  category: woodwinds
+  instrument: synth
+  description: 长笛连奏, 气息感强
+  tags:
+  - 木管
+  - 长笛
+  - flute
+  - legato
+  - breathy
+  - soft
+  params:
+    brightness: 0.55
+    warmth: 0.45
+    attack: 0.4
+    sustain: 0.65
+    body: 0.35
+  reference_audio: ''
