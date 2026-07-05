@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import music21
 from music21 import stream, note, chord, instrument, key, meter, tempo, clef
@@ -78,6 +78,7 @@ def generate_staff(
     title: str = "Untitled",
     composer: str = "",
     compile_pdf: bool = True,
+    instrument_name: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> NotationResult:
     """生成五线谱 / Generate standard staff notation.
@@ -90,6 +91,7 @@ def generate_staff(
         title: 乐曲标题
         composer: 作曲者
         compile_pdf: 是否编译 PDF (需要 LilyPond)
+        instrument_name: 乐器名称 (用于谱号优化和 ottava)
         progress_callback: 进度回调
 
     Returns:
@@ -107,6 +109,19 @@ def generate_staff(
 
     # 深拷贝避免修改原 Score
     work_score = copy_score(score)
+
+    # 谱号优化 (根据乐器选择最佳谱号)
+    if instrument_name:
+        try:
+            from src.core.notation.octave_optimizer import (
+                optimize_clef_for_instrument, apply_ottava,
+            )
+            work_score = optimize_clef_for_instrument(work_score, instrument_name)
+            # 非 bass/guitar 乐器检查极端音域
+            if instrument_name.lower() not in ('bass', 'guitar'):
+                work_score = apply_ottava(work_score, instrument_name=instrument_name)
+        except ImportError:
+            pass
 
     # 添加曲目信息
     md = work_score.metadata or music21.metadata.Metadata()
@@ -166,6 +181,7 @@ def generate_jianpu(
     title: str = "Untitled",
     compile_pdf: bool = True,
     key_name: str = "C",
+    analysis: Optional[object] = None,  # AnalysisResult (节拍分析, 用于拍号)
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> NotationResult:
     """生成简谱 / Generate jianpu (numbered musical notation).
@@ -179,6 +195,7 @@ def generate_jianpu(
         title: 乐曲标题
         compile_pdf: 是否编译 PDF
         key_name: 调性名称 (如 'C', 'D', 'G' 等)
+        analysis: 节拍分析结果 (用于读取正确拍号)
         progress_callback: 进度回调
 
     Returns:
@@ -207,9 +224,17 @@ def generate_jianpu(
     if progress_callback:
         progress_callback(30, "转换简谱...")
 
+    # 确定拍号 (优先使用 analysis 的结果)
+    beats_per_bar = 4.0  # 默认 4/4
+    if analysis is not None and hasattr(analysis, 'time_signature'):
+        beats_per_bar = float(analysis.time_signature[0])
+
     # 生成 jianpu-ly 代码
     try:
-        jianpu_ly = _score_to_jianpu_ly(melody, title=title, key_name=key_name)
+        jianpu_ly = _score_to_jianpu_ly(
+            melody, title=title, key_name=key_name,
+            beats_per_bar=beats_per_bar,
+        )
     except Exception as e:
         errors.append(f"简谱转换失败: {e}")
         result.errors = errors
@@ -473,6 +498,7 @@ def generate_all_formats(
     composer: str = "",
     formats: list[NotationFormat] | None = None,
     compile_pdf: bool = True,
+    analysis: Optional[object] = None,  # AnalysisResult (节拍分析, 用于拍号/强拍)
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[NotationFormat, NotationResult]:
     """生成所有指定谱式 / Generate all specified notation formats.
@@ -484,6 +510,7 @@ def generate_all_formats(
         composer: 作曲者
         formats: 要生成的格式列表 (默认全部四种)
         compile_pdf: 是否编译 PDF
+        analysis: 节拍分析结果 (用于简谱拍号和五线谱强拍对齐)
         progress_callback: 进度回调
 
     Returns:
@@ -510,8 +537,8 @@ def generate_all_formats(
         if fmt == NotationFormat.STAFF:
             if first_melodic:
                 results[fmt] = generate_staff(
-                    first_melodic, output_dir, title, composer,
-                    compile_pdf, fmt_progress,
+                    first_melodic, output_dir, title=title, composer=composer,
+                    compile_pdf=compile_pdf, progress_callback=fmt_progress,
                 )
 
         elif fmt == NotationFormat.JIANPU:
@@ -519,9 +546,11 @@ def generate_all_formats(
                 # 检测调性
                 key_info = first_melodic.analyze('key')
                 results[fmt] = generate_jianpu(
-                    first_melodic, output_dir, title,
-                    compile_pdf, str(key_info.tonic.name) if key_info else 'C',
-                    fmt_progress,
+                    first_melodic, output_dir, title=title,
+                    compile_pdf=compile_pdf,
+                    key_name=str(key_info.tonic.name) if key_info else 'C',
+                    analysis=analysis,
+                    progress_callback=fmt_progress,
                 )
 
         elif fmt == NotationFormat.TABLATURE:
@@ -546,19 +575,36 @@ def generate_all_formats(
 # ===== 内部辅助函数 =====
 
 def copy_score(score: music21.stream.Score) -> music21.stream.Score:
-    """深拷贝 Score (music21 可能没有标准 __deepcopy__)."""
-    # 通过 MusicXML 序列化/反序列化是最可靠的方式
+    """深拷贝 Score via MusicXML 序列化/反序列化 / Deep copy via MusicXML round-trip.
+
+    music21 没有可靠的 __deepcopy__ 实现, 通过 MusicXML 序列化再反序列化
+    是最可靠的方式。临时文件由 TemporaryDirectory 自动清理。
+
+    Args:
+        score: music21 Score 对象
+
+    Returns:
+        独立的深拷贝 Score
+    """
     import tempfile
-    tmp = tempfile.NamedTemporaryFile(suffix='.musicxml', delete=False)
-    tmp_path = Path(tmp.name)
-    try:
-        score.write('musicxml', fp=str(tmp_path.with_suffix('')))
-        copied = music21.converter.parse(str(tmp_path))
-    finally:
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / "score"
+        # music21 v9+ auto-appends .musicxml when writing, so strip suffix first
+        score.write('musicxml', fp=str(tmp_path))
+        # music21 may have appended .musicxml → look for the actual output file
+        actual_path = tmp_path.with_suffix('.musicxml')
+        if not actual_path.exists():
+            actual_path = tmp_path  # music21 wrote to exact path (older versions)
         try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+            copied = music21.converter.parse(str(actual_path))
+        except Exception as e:
+            _logger.warning("Score 深拷贝失败: %s", e)
+            # 降级: 返回原 Score (调用方会继续工作, 但可能修改原对象)
+            return score
+
     if isinstance(copied, stream.Score):
         return copied
     s = stream.Score()
@@ -607,15 +653,76 @@ def _jianpu_duration_prefix(quarter_length: float) -> str:
 
 
 def _extract_melody(score: music21.stream.Score) -> music21.stream.Score:
-    """从 Score 中提取主旋律 (取音高最高的声部) / Extract main melody."""
-    # 直接返回 Score — 简谱转换会在 _score_to_jianpu_ly 中处理
-    return score
+    """从 Score 中提取主旋律 (取音高最高的声部) / Extract main melody.
+
+    遍历所有音符和休止符:
+    - 音符: 每个 onset 只保留最高音高 (和弦展开取最高音)
+    - 休止符: 保留在无音符占据的时间位置
+
+    这样可以避免 polyphonic 内容污染简谱输出，同时保留节奏完整性。
+
+    Args:
+        score: music21 Score 对象 (polyphonic)
+
+    Returns:
+        单声部旋律 Score (monophonic, 含休止符)
+    """
+    # {offset: {'type': 'note'|'rest', 'midi'?: int, 'ql': float}}
+    offset_data: dict[float, dict] = {}
+
+    for el in score.recurse().notesAndRests:
+        offset = round(float(el.offset), 6)
+        ql = float(el.quarterLength)
+
+        if el.isRest:
+            # 休止符: 仅在无音符占据该位置时保留
+            if offset not in offset_data:
+                offset_data[offset] = {"type": "rest", "ql": ql}
+        else:
+            # 音符 → 取最高音
+            if isinstance(el, chord.Chord):
+                midi = max(p.midi for p in el.pitches)
+            else:
+                midi = el.pitch.midi
+
+            existing = offset_data.get(offset)
+            if existing is None or existing.get("type") == "rest":
+                offset_data[offset] = {"type": "note", "midi": midi, "ql": ql}
+            elif existing.get("type") == "note" and midi > existing["midi"]:
+                offset_data[offset] = {"type": "note", "midi": midi, "ql": ql}
+
+    if not offset_data:
+        empty_score = stream.Score()
+        empty_score.insert(0, stream.Part())
+        return empty_score
+
+    # 构建单声部 Score
+    new_score = stream.Score()
+    new_part = stream.Part()
+
+    for offset in sorted(offset_data.keys()):
+        data = offset_data[offset]
+        if data["type"] == "rest":
+            n = note.Rest()
+        else:
+            p = music21.pitch.Pitch(data["midi"])
+            n = note.Note(p)
+        n.quarterLength = data["ql"]
+        new_part.append(n)
+
+    new_score.insert(0, new_part)
+
+    if score.metadata:
+        new_score.metadata = score.metadata
+
+    return new_score
 
 
 def _score_to_jianpu_ly(
     score: music21.stream.Score,
     title: str = "Untitled",
     key_name: str = "C",
+    beats_per_bar: float = 4.0,  # 每小节拍数 (默认 4/4)
 ) -> str:
     """将 music21 Score 转换为 jianpu-ly 格式字符串.
 
@@ -626,6 +733,7 @@ def _score_to_jianpu_ly(
         score: music21 Score
         title: 标题
         key_name: 调性名
+        beats_per_bar: 每小节拍数 (3.0 = 3/4, 4.0 = 4/4, 6.0 = 6/8)
 
     Returns:
         jianpu-ly LilyPond 源码字符串
@@ -677,7 +785,6 @@ def _score_to_jianpu_ly(
         jianpu_parts.append(f"{prefix}{jp_note}")
 
     # Pad incomplete final bar with rests (jianpu-ly requires complete bars)
-    beats_per_bar = 4.0  # assume 4/4
     remainder = total_duration % beats_per_bar
     if remainder > 0 and remainder < beats_per_bar:
         pad_beats = beats_per_bar - remainder
@@ -787,7 +894,10 @@ def _create_tablature_part(
     try:
         tab_staff.makeNotation(inPlace=True, tabNotation=True)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).warning(
+            "六线谱 makeNotation 失败 (music21 版本可能不支持)", exc_info=True,
+        )
 
     return tab_staff
 

@@ -258,7 +258,9 @@ class FeatureExtractor:
             try:
                 callback(pct, msg)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "特征提取进度回调异常 (忽略)", exc_info=True,
+                )
 
 
 def compare_features(a: np.ndarray, b: np.ndarray) -> float:

@@ -377,7 +377,9 @@ class PresetMatcher:
             try:
                 callback(pct, msg)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "匹配器进度回调异常 (忽略)", exc_info=True,
+                )
 
 
 def format_match_results(results: list[MatchResult]) -> str:

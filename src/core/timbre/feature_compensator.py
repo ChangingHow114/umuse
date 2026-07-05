@@ -314,4 +314,4 @@ class FeatureCompensator:
             try:
                 callback(pct, msg)
             except Exception:
-                pass
+                logger.debug("进度回调异常 (忽略)", exc_info=True)

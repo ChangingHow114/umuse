@@ -16,6 +16,7 @@ GUI 用法:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -164,6 +165,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         skip_timbre=args.no_matching,
         skip_effects=args.no_effects,
         skip_refinement=args.no_refinement,
+        skip_beat_analysis=args.no_beat_analysis,
         progress_callback=progress,
     )
     print()
@@ -618,6 +620,14 @@ def cmd_notation(args: argparse.Namespace) -> int:
 
 def main() -> int:
     """主入口 / Main entry point."""
+    from src.config import setup_logging
+
+    # 初始化日志 (CLI 模式: WARNING → 控制台, INFO → 文件)
+    setup_logging(
+        log_file=_PROJECT_ROOT / "logs" / "umuse.log",
+        console_level=logging.WARNING,
+    )
+
     parser = argparse.ArgumentParser(
         prog="umuse",
         description="UMuse — AI 音乐逆向工程工作站",
@@ -686,6 +696,8 @@ def main() -> int:
                             help="跳过效果器分析 (Phase 5)")
     pipe_parser.add_argument("--no-refinement", action="store_true",
                             help="跳过迭代精炼 (使用独立 Phase 4 + Phase 5)")
+    pipe_parser.add_argument("--no-beat-analysis", action="store_true",
+                            help="跳过节拍分析 (Phase 1.5, BPM/拍号/强拍检测)")
 
     # === match ===
     match_parser = subparsers.add_parser("match", help="音色预设匹配 (Phase 4)")

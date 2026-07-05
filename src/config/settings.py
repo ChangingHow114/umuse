@@ -100,6 +100,41 @@ class NotationSettings:
 
 
 @dataclass
+class BeatDetectionSettings:
+    """节拍检测设置 / Beat detection settings."""
+
+    enabled: bool = True
+    preferred_stem: str = "drums"  # 优先用于 BPM 检测的 stem
+    sr: int = 22050  # 分析采样率
+    bpm_min: float = 40.0
+    bpm_max: float = 250.0
+    downbeat_confidence_threshold: float = 0.3
+
+
+@dataclass
+class RhythmAnalysisSettings:
+    """节奏分析设置 / Rhythm analysis settings."""
+
+    enabled: bool = True
+    min_pattern_occurrences: int = 2  # 模式出现 ≤ 此值 → 标记碎音
+    short_note_threshold_ms: float = 150.0  # 碎音候选最大时值 (ms)
+    section_review_interval_bars: int = 16  # 每 N 小节复核一次
+    section_alignment_warning_pct: float = 0.3  # 偏离 > 此比例发出警告
+
+
+@dataclass
+class OctaveOptimizationSettings:
+    """八度优化设置 / Octave optimization settings."""
+
+    enabled: bool = True
+    bass_8_clef: bool = True          # bass 用 bass_8 谱号
+    guitar_8vb_clef: bool = True      # guitar 用 treble_8vb 谱号
+    ottava_high_threshold: int = 79   # MIDI pitch (G5) — 高于此加 8va
+    ottava_low_threshold: int = 48    # MIDI pitch (C3) — 低于此加 8vb
+    ottava_min_measures: int = 2      # 最少连续小节数才加 ottava
+
+
+@dataclass
 class UISettings:
     """UI 设置 / UI settings."""
 
@@ -124,6 +159,9 @@ class Settings:
     timbre: TimbreSettings = field(default_factory=TimbreSettings)
     effects: EffectsSettings = field(default_factory=EffectsSettings)
     notation: NotationSettings = field(default_factory=NotationSettings)
+    beat_detection: BeatDetectionSettings = field(default_factory=BeatDetectionSettings)
+    rhythm_analysis: RhythmAnalysisSettings = field(default_factory=RhythmAnalysisSettings)
+    octave: OctaveOptimizationSettings = field(default_factory=OctaveOptimizationSettings)
     ui: UISettings = field(default_factory=UISettings)
 
     # 通用设置
@@ -151,6 +189,9 @@ class Settings:
             "timbre": _dataclass_to_dict(self.timbre),
             "effects": _dataclass_to_dict(self.effects),
             "notation": _dataclass_to_dict(self.notation),
+            "beat_detection": _dataclass_to_dict(self.beat_detection),
+            "rhythm_analysis": _dataclass_to_dict(self.rhythm_analysis),
+            "octave": _dataclass_to_dict(self.octave),
             "ui": _dataclass_to_dict(self.ui),
         }
 
@@ -174,6 +215,9 @@ class Settings:
             ("timbre", TimbreSettings),
             ("effects", EffectsSettings),
             ("notation", NotationSettings),
+            ("beat_detection", BeatDetectionSettings),
+            ("rhythm_analysis", RhythmAnalysisSettings),
+            ("octave", OctaveOptimizationSettings),
             ("ui", UISettings),
         ]:
             if key in data:

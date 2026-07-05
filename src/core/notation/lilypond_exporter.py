@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+logger = logging.getLogger(__name__)
 
 # ===== LilyPond 配置 =====
 
@@ -36,7 +38,7 @@ def get_lilypond_path() -> Path:
                 _LILYPOND_PATH = p
                 return p
     except Exception:
-        pass
+        logger.debug("music21 LilyPond 路径查询失败 (正常, 使用 fallback)", exc_info=True)
 
     # Fallback: 常见的安装位置 (跨平台)
     import platform
@@ -76,7 +78,7 @@ def set_lilypond_path(path: Path | str) -> None:
         from music21 import environment
         environment.UserSettings()['lilypondPath'] = str(p)
     except Exception:
-        pass
+        logger.debug("music21 UserSettings 更新失败 (非关键)", exc_info=True)
 
 
 # ===== 模板系统 =====
@@ -235,7 +237,7 @@ class LilyPondExporter:
                 # "GNU LilyPond 2.26.0"
                 return result.stdout.strip().split('\n')[0]
         except Exception:
-            pass
+            logger.debug("LilyPond 版本检测失败 (可能未安装)", exc_info=True)
         return None
 
     def export_ly(
@@ -293,7 +295,7 @@ class LilyPondExporter:
             try:
                 m21_output.unlink()  # 删除无后缀版本
             except OSError:
-                pass
+                logger.debug("music21 临时文件清理失败 (非关键)", exc_info=True)
 
         return output_path
 

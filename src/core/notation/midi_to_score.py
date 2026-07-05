@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import music21
 from music21 import converter, instrument, key, meter, tempo, stream, note, chord
+
+logger = logging.getLogger(__name__)
 
 
 def midi_to_score(
@@ -19,6 +22,8 @@ def midi_to_score(
     quantize_denominator: int = 16,  # 量化到 1/16 音符 (16分音符)
     remove_overlaps: bool = True,
     simplify_durations: bool = True,
+    instrument_name: str = "",
+    analysis: Optional[object] = None,  # AnalysisResult (避免循环导入)
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> music21.stream.Score:
     """将 MIDI 文件转换为 music21 Score / Convert MIDI file to music21 Score.
@@ -29,10 +34,12 @@ def midi_to_score(
         quantize_denominator: 量化精度 (4=四分音符, 8=八分, 16=十六分, 默认16)
         remove_overlaps: 是否移除同音高音符重叠
         simplify_durations: 是否简化时值表示 (三连音→附点等)
+        instrument_name: 乐器名称 (用于谱号优化, 如 'bass', 'guitar')
+        analysis: 节拍分析结果 (BeatDetector 输出), 用于强拍对齐
         progress_callback: 进度回调 (percent, message)
 
     Returns:
-        music21 Score 对象 (已拆分为多个 Part)
+        music21 Score 对象 (已拆分为多个 Part, 谱号已优化, 小节已对齐)
 
     Raises:
         FileNotFoundError: MIDI 文件不存在
@@ -64,6 +71,12 @@ def midi_to_score(
     # 展开重复和跳转
     score = score.expandRepeats()
 
+    # 强拍对齐 (如果提供了 analysis)
+    if analysis is not None:
+        if progress_callback:
+            progress_callback(35, "对齐强拍...")
+        score = _align_measures_to_downbeats(score, analysis)
+
     # 量化
     if quantize:
         if progress_callback:
@@ -86,6 +99,16 @@ def midi_to_score(
     if progress_callback:
         progress_callback(80, "检测调性/拍号...")
     score = _analyze_and_annotate(score)
+
+    # 谱号优化 (根据乐器选择最佳谱号)
+    if instrument_name:
+        if progress_callback:
+            progress_callback(90, f"优化 {instrument_name} 谱号...")
+        try:
+            from src.core.notation.octave_optimizer import optimize_clef_for_instrument
+            score = optimize_clef_for_instrument(score, instrument_name)
+        except ImportError:
+            pass  # 可选模块，不阻断流程
 
     if progress_callback:
         progress_callback(100, "Score 转换完成")
@@ -170,7 +193,7 @@ def detect_key_and_tempo(
                 # 找最常见的事件间隔
                 pass
     except Exception:
-        pass
+        logger.debug("BPM 检测失败 (MIDI 中无 MetronomeMark)", exc_info=True)
 
     # 拍号
     ts_str = None
@@ -202,8 +225,7 @@ def _quantize_score(
             processDurations=True,
         )
     except Exception:
-        # music21 量化如果失败就跳过
-        pass
+        logger.debug("music21 量化失败 (可能是兼容性问题), 跳过此步骤", exc_info=True)
     return score
 
 
@@ -304,5 +326,81 @@ def _analyze_and_annotate(
         has_tempo = any(isinstance(el, tempo.MetronomeMark) for el in part.recurse())
         if not has_tempo and info['tempo_bpm']:
             part.insert(0, tempo.MetronomeMark(number=info['tempo_bpm']))
+
+    return score
+
+
+def _align_measures_to_downbeats(
+    score: music21.stream.Score,
+    analysis,  # AnalysisResult
+) -> music21.stream.Score:
+    """对齐小节边界到检测到的强拍 / Align measure boundaries to detected downbeats.
+
+    music21 的 MIDI import 基于 MIDI 文件中的拍号和时间签名创建小节。
+    如果原始转录的 BPM 不对 (basic-pitch 通常写入默认 120 BPM),
+    小节边界会与实际音频的强拍位置产生漂移。
+
+    修复策略:
+    1. 比较 Score 中的速度标记与 BeatDetector 检测到的 BPM
+    2. 若偏差 > 3%, 更新 Score 的 MetronomeMark 以匹配检测值
+    3. 检查并修正弱起小节 (anacrusis) 偏移
+
+    Args:
+        score: music21 Score 对象 (原地修改)
+        analysis: 节拍分析结果 (含 bpm 和 downbeat_times)
+
+    Returns:
+        修改后的 Score
+    """
+    if not hasattr(analysis, 'downbeat_times') or not analysis.downbeat_times:
+        return score
+
+    detected_bpm = getattr(analysis, 'bpm', None)
+    if detected_bpm is None or detected_bpm <= 0:
+        return score
+
+    # ---- 步骤 1: BPM 对齐 ----
+    # 检查 Score 中的速度标记是否与检测到的 BPM 一致
+    score_tempo: Optional[float] = None
+    for el in score.recurse():
+        if isinstance(el, tempo.MetronomeMark):
+            score_tempo = el.number
+            break
+
+    bpm_mismatch = (
+        score_tempo is not None
+        and abs(score_tempo - detected_bpm) / detected_bpm > 0.03
+    )
+
+    if bpm_mismatch:
+        logger.info(
+            "强拍对齐: Score BPM=%.1f → 检测 BPM=%.1f (偏差 %.1f%%)",
+            score_tempo, detected_bpm,
+            abs(score_tempo - detected_bpm) / detected_bpm * 100,
+        )
+        # 更新所有 MetronomeMark
+        for el in score.recurse():
+            if isinstance(el, tempo.MetronomeMark):
+                el.number = detected_bpm
+
+    # ---- 步骤 2: 弱起小节 (anacrusis) 处理 ----
+    # 如果第一个 downbeat 距时间零点超过半拍, 说明有弱起
+    # 调整 measure 内元素的偏移使强拍对齐小节线
+    first_downbeat = analysis.downbeat_times[0]
+    half_beat = analysis.beat_interval / 2.0
+
+    if first_downbeat > half_beat:
+        logger.info(
+            "强拍对齐: 检测到弱起小节 (首个 downbeat @ %.2fs), 调整偏移...",
+            first_downbeat,
+        )
+        for part in score.parts:
+            for el in part.recurse():
+                try:
+                    current_offset = float(el.offset)
+                    if current_offset >= first_downbeat:
+                        el.offset = current_offset - first_downbeat
+                except (AttributeError, TypeError):
+                    pass
 
     return score

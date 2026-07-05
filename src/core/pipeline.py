@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from src.config.settings import Settings
 from src.core.project import Project, ProjectStatus
@@ -35,6 +35,7 @@ class PipelineManager:
         """
         self.project = project
         self.settings = settings or Settings().load()
+        self._beat_analysis: Optional[object] = None  # AnalysisResult, 懒加载
 
     @staticmethod
     def _report(
@@ -47,7 +48,7 @@ class PipelineManager:
             try:
                 callback(pct, msg)
             except Exception:
-                pass
+                logger.debug("进度回调异常 (忽略)", exc_info=True)
 
     # ===== Phase 1: 音频分轨 =====
 
@@ -105,6 +106,94 @@ class PipelineManager:
 
         return stems
 
+    # ===== Phase 1.5: 节拍分析 =====
+
+    def run_beat_analysis(
+        self,
+        preferred_stem: Optional[str] = None,
+        progress_callback: Callable[[int, str], None] | None = None,
+    ):
+        """执行节拍分析 / Run beat analysis (BPM + downbeat detection).
+
+        从分轨后的 stem 音频中检测 BPM、节拍位置和强拍。
+        优先使用鼓组 stem (节奏信息最丰富)，其次 bass、钢琴。
+        结果缓存在 self._beat_analysis 中供下游使用。
+
+        Args:
+            preferred_stem: 优先使用的 stem (None = 自动选择)
+            progress_callback: 进度回调
+
+        Returns:
+            AnalysisResult 或 None (检测失败时)
+        """
+        from src.core.analysis import BeatDetector
+
+        if progress_callback:
+            progress_callback(0, "节拍分析中...")
+
+        # 选择最佳检测源
+        stem_order = preferred_stem and [preferred_stem] or [
+            "drums", "bass", "piano", "guitar", "vocals",
+        ]
+        selected_stem = None
+        selected_path = None
+
+        for stem_name in stem_order:
+            stem_info = self.project.stems.get(stem_name)
+            if stem_info and stem_info.path and stem_info.path.exists():
+                selected_stem = stem_name
+                selected_path = stem_info.path
+                break
+
+        if not selected_path:
+            logger.warning("节拍分析: 没有可用的 stem 音频文件")
+            if progress_callback:
+                progress_callback(100, "节拍分析跳过 (无可用音频)")
+            return None
+
+        if progress_callback:
+            progress_callback(10, f"使用 '{selected_stem}' stem 检测节拍...")
+
+        # 检测
+        detector = BeatDetector(
+            sr=22050,
+            bpm_min=40.0,
+            bpm_max=250.0,
+        )
+
+        try:
+            result = detector.detect(
+                selected_path,
+                progress_callback=lambda p, m: (
+                    progress_callback(10 + int(p * 0.8), m)
+                    if progress_callback else None
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"节拍检测失败: {e}")
+            if progress_callback:
+                progress_callback(100, f"节拍检测失败: {e}")
+            return None
+
+        # 缓存结果
+        self._beat_analysis = result
+
+        if progress_callback:
+            progress_callback(
+                100,
+                f"节拍分析完成: BPM={result.bpm:.1f}, {result.time_signature_str}, "
+                f"置信度={result.confidence:.1%}",
+            )
+
+        logger.info(
+            "节拍分析: BPM=%.1f, %s, %d beats, %d downbeats, confidence=%.2f",
+            result.bpm, result.time_signature_str,
+            len(result.beat_times), len(result.downbeat_times),
+            result.confidence,
+        )
+
+        return result
+
     # ===== Phase 2: MIDI 转录 =====
 
     def run_transcription(
@@ -114,6 +203,7 @@ class PipelineManager:
         frame_threshold: float = 0.3,
         minimum_note_length: float = 58.0,
         clean_midi_output: bool = True,
+        bpm: Optional[float] = None,  # 外部 BPM (None = 自动使用节拍分析结果)
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> dict[str, dict]:
         """执行 MIDI 转录 / Run MIDI transcription.
@@ -127,6 +217,7 @@ class PipelineManager:
             frame_threshold: 持续帧阈值 (0-1)
             minimum_note_length: 最短音符 (ms)
             clean_midi_output: 是否后处理清洗 MIDI
+            bpm: 转录 BPM (None = 自动使用节拍分析结果或默认 120)
             progress_callback: 进度回调
 
         Returns:
@@ -138,6 +229,13 @@ class PipelineManager:
         from src.core.transcription import transcribe, clean_midi, CleanConfig
 
         self.project.set_status(ProjectStatus.TRANSCRIBING)
+
+        # 自动获取 BPM (如果未指定)
+        # Phase 1: 检查外部 BPM → 缓存的分析结果
+        if bpm is None and self._beat_analysis is not None:
+            bpm = self._beat_analysis.bpm
+        if bpm is not None:
+            logger.info(f"转录使用 BPM: {bpm:.1f}")
 
         # 确定要转录的 stem: 只处理旋律乐器
         melodic_stems = ["piano", "guitar", "bass", "vocals"]
@@ -188,14 +286,38 @@ class PipelineManager:
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 minimum_note_length=minimum_note_length,
+                bpm=bpm,
                 progress_callback=stem_progress,
             )
 
             clean_report = None
             if clean_midi_output and result["midi_data"] is not None:
+                # 构建 CleanConfig，使用节拍分析 BPM + 节奏验证
+                clean_config = CleanConfig(
+                    merge_overlapping=True,
+                    normalize_velocity=True,
+                    external_bpm=bpm,
+                    rhythm_validate_enabled=(
+                        self.settings.rhythm_analysis.enabled
+                        if hasattr(self.settings, 'rhythm_analysis') else False
+                    ),
+                    rhythm_min_occurrences=(
+                        self.settings.rhythm_analysis.min_pattern_occurrences
+                        if hasattr(self.settings, 'rhythm_analysis') else 2
+                    ),
+                    section_review_enabled=(
+                        self.settings.rhythm_analysis.enabled
+                        if hasattr(self.settings, 'rhythm_analysis') else False
+                    ),
+                    section_review_interval=(
+                        self.settings.rhythm_analysis.section_review_interval_bars
+                        if hasattr(self.settings, 'rhythm_analysis') else 16
+                    ),
+                )
                 cleaned, clean_report = clean_midi(
                     result["midi_data"],
-                    CleanConfig(merge_overlapping=True, normalize_velocity=True),
+                    clean_config,
+                    analysis=self._beat_analysis,
                     progress_callback=lambda p, m: stem_progress(85 + p // 7, m),
                 )
                 # 覆盖保存清洗后的 MIDI
@@ -339,6 +461,8 @@ class PipelineManager:
                 continue
             scores[sname] = midi_to_score(
                 midi_path,
+                instrument_name=sname,
+                analysis=self._beat_analysis,
                 progress_callback=lambda p, m, sn=sname: (
                     progress_callback(5 + int(p * 0.25), f"加载 {sn}: {m}")
                     if progress_callback else None
@@ -370,15 +494,17 @@ class PipelineManager:
         if notation_format == "all":
             results = generate_all_formats(
                 scores, notation_dir, title=title, composer=composer,
-                compile_pdf=True,
+                compile_pdf=True, analysis=self._beat_analysis,
                 progress_callback=progress_callback,
             )
         elif notation_format == "staff":
-            first_score = next(iter(scores.values()))
+            first_name = next(iter(scores.keys()))
+            first_score = scores[first_name]
             results = {
                 NotationFormat.STAFF: generate_staff(
                     first_score, notation_dir, title=title, composer=composer,
-                    compile_pdf=True, progress_callback=progress_callback,
+                    compile_pdf=True, instrument_name=first_name,
+                    progress_callback=progress_callback,
                 ),
             }
         elif notation_format == "jianpu":
@@ -386,7 +512,8 @@ class PipelineManager:
             results = {
                 NotationFormat.JIANPU: generate_jianpu(
                     first_score, notation_dir, title=title,
-                    compile_pdf=True, progress_callback=progress_callback,
+                    compile_pdf=True, analysis=self._beat_analysis,
+                    progress_callback=progress_callback,
                 ),
             }
         elif notation_format == "tablature":
@@ -780,9 +907,14 @@ class PipelineManager:
         skip_timbre: bool = False,
         skip_effects: bool = False,
         skip_refinement: bool = False,
+        skip_beat_analysis: bool = False,
+        resume: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> Project:
         """执行完整流水线 / Run full pipeline end-to-end.
+
+        支持断点续跑: 如果 resume=True (默认), 自动检测已完成的阶段并跳过。
+        每个阶段完成后自动保存项目, 失败时保留已完成的工作。
 
         Args:
             skip_transcription: 跳过 MIDI 转录
@@ -791,47 +923,207 @@ class PipelineManager:
             skip_timbre: 跳过音色匹配 (Phase 4)
             skip_effects: 跳过效果器分析 (Phase 5 standalone)
             skip_refinement: 跳过迭代精炼 (Phase 4→5→4)
+            skip_beat_analysis: 跳过节拍分析 (Phase 1.5)
+            resume: 是否启用断点续跑 (默认 True)
             progress_callback: 总进度回调 (percent, message)
 
         Returns:
             处理完成的 Project
         """
-        stages = [
-            ("分轨", self.run_separation),
-        ]
-        if not skip_transcription:
-            stages.append(("MIDI 转录", self.run_transcription))
-        if not skip_drum_slicing:
-            stages.append(("鼓组切片", self.run_drum_slicing))
-        if not skip_notation:
-            stages.append(("乐谱生成", lambda **kw: self.run_notation(**kw)))
+        # ---- 断点续跑: 检测已完成的阶段 ----
+        auto_skip = self._detect_completed_stages() if resume else set()
+        project_file = (
+            self.project.output_dir / "project.json"
+            if self.project.output_dir else None
+        )
+
+        if auto_skip:
+            skipped_names = ", ".join(sorted(auto_skip))
+            logger.info("断点续跑: 跳过已完成阶段 → %s", skipped_names)
+            if progress_callback:
+                progress_callback(0, f"断点续跑: 跳过 [{skipped_names}]")
+
+        # ---- 构建阶段列表 ----
+        stages: list[tuple[str, str, callable]] = []  # (name, key, func)
+
+        def _add_stage(name: str, key: str, func) -> None:
+            """添加阶段 (考虑显式跳过 + 断点续跑跳过)."""
+            skip_reasons = []
+            if key == "separation":
+                if auto_skip and "分轨" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "beat_analysis":
+                if skip_beat_analysis:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "节拍分析" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "transcription":
+                if skip_transcription:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "MIDI转录" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "drum_slicing":
+                if skip_drum_slicing:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "鼓组切片" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "notation":
+                if skip_notation:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "乐谱生成" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "timbre":
+                if skip_timbre:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "音色匹配" in auto_skip:
+                    skip_reasons.append("已完成")
+            elif key == "effects":
+                if skip_effects:
+                    skip_reasons.append("用户跳过")
+                elif auto_skip and "效果器分析" in auto_skip:
+                    skip_reasons.append("已完成")
+
+            if skip_reasons:
+                logger.info("阶段 '%s' 被跳过: %s", name, ", ".join(skip_reasons))
+                return
+            stages.append((name, key, func))
+
+        _add_stage("分轨", "separation", self.run_separation)
+        _add_stage("节拍分析", "beat_analysis",
+                   lambda **kw: self.run_beat_analysis(**kw))
+        _add_stage("MIDI 转录", "transcription", self.run_transcription)
+        _add_stage("鼓组切片", "drum_slicing", self.run_drum_slicing)
+        _add_stage("乐谱生成", "notation",
+                   lambda **kw: self.run_notation(**kw))
         if not skip_refinement and not skip_timbre:
-            # 迭代精炼 (Phase 4→5→4 一体化)
-            stages.append(("音色匹配+效果器", lambda **kw: self.run_refinement(**kw)))
+            _add_stage("音色匹配+效果器", "refinement",
+                       lambda **kw: self.run_refinement(**kw))
         elif not skip_timbre:
-            stages.append(("音色匹配", lambda **kw: self.run_timbre_matching(**kw)))
+            _add_stage("音色匹配", "timbre",
+                       lambda **kw: self.run_timbre_matching(**kw))
         if not skip_effects and skip_refinement:
-            # 独立效果器分析 (不迭代)
-            stages.append(("效果器分析", lambda **kw: self.run_effects_analysis(**kw)))
+            _add_stage("效果器分析", "effects",
+                       lambda **kw: self.run_effects_analysis(**kw))
 
-        for i, (stage_name, stage_func) in enumerate(stages):
-            stage_pct_base = i / len(stages) * 100
+        if not stages:
+            logger.info("所有阶段已完成, 无需执行")
+            if progress_callback:
+                progress_callback(100, "全部阶段已完成!")
+            return self.project
 
-            def stage_callback(pct: int, msg: str) -> None:
+        # ---- 执行阶段 ----
+        n_stages = len(stages)
+        for i, (stage_name, stage_key, stage_func) in enumerate(stages):
+            stage_pct_base = i / n_stages * 100
+            sn = stage_name  # 闭包绑定
+
+            def stage_callback(pct: int, msg: str, _sn: str = sn) -> None:
                 """将阶段内进度映射到总进度."""
-                total_pct = int(stage_pct_base + pct / len(stages))
+                total_pct = int(stage_pct_base + pct / n_stages)
                 if progress_callback:
-                    progress_callback(total_pct, f"[{stage_name}] {msg}")
+                    progress_callback(total_pct, f"[{_sn}] {msg}")
 
+            logger.info("开始阶段: %s (%d/%d)", stage_name, i + 1, n_stages)
             try:
                 stage_func(progress_callback=stage_callback)
             except Exception as e:
+                # 保存错误状态, 保留已完成的工作
                 self.project.set_status(ProjectStatus.FAILED)
-                self.project.error_message = f"{stage_name} 失败: {e}"
+                self.project.error_message = f"[{stage_name}] {e}"
+                logger.error("阶段 '%s' 失败: %s", stage_name, e)
+                if project_file:
+                    try:
+                        self.project.save(project_file)
+                        logger.info("错误状态已保存到 %s", project_file)
+                    except Exception as save_err:
+                        logger.warning("无法保存错误状态: %s", save_err)
                 raise
 
+            # 阶段成功 → 保存检查点
+            if project_file:
+                try:
+                    self.project.save(project_file)
+                    logger.info("检查点已保存: %s 完成", stage_name)
+                except Exception as save_err:
+                    logger.warning("检查点保存失败: %s", save_err)
+
         self.project.set_status(ProjectStatus.COMPLETED)
+        if project_file:
+            try:
+                self.project.save(project_file)
+            except Exception:
+                logger.warning("无法保存最终项目状态", exc_info=True)
+
         if progress_callback:
             progress_callback(100, "全部完成!")
 
         return self.project
+
+    # ===== 断点续跑辅助 =====
+
+    def _detect_completed_stages(self) -> set[str]:
+        """检测已完成的阶段 / Detect which stages are already done.
+
+        检查每个阶段的输出产物是否存在, 返回可跳过的阶段名集合。
+
+        Returns:
+            {"分轨", "MIDI转录", ...}  已完成的阶段名
+        """
+        completed: set[str] = set()
+
+        # 分轨: 检查所有 stem 是否都有音频文件
+        all_stems_have_audio = all(
+            stem.path and stem.path.exists()
+            for stem in self.project.stems.values()
+        )
+        if all_stems_have_audio and self.project.stems:
+            completed.add("分轨")
+        else:
+            return completed  # 分轨未完成, 后面不可能完成
+
+        # 节拍分析: 检查缓存
+        if self._beat_analysis is not None:
+            completed.add("节拍分析")
+
+        # MIDI 转录: 检查旋律 stem 是否有 MIDI 文件
+        melodic_stems = ["piano", "guitar", "bass", "vocals"]
+        melodic_with_midi = all(
+            self.project.stems[s].midi_path and self.project.stems[s].midi_path.exists()
+            for s in melodic_stems
+            if s in self.project.stems and self.project.stems[s].path
+            and self.project.stems[s].path.exists()
+        )
+        if melodic_with_midi:
+            completed.add("MIDI转录")
+
+        # 鼓组切片: 检查 drums stem 是否有切片
+        drums = self.project.stems.get("drums")
+        if drums and drums.sample_slices:
+            completed.add("鼓组切片")
+
+        # 乐谱生成: 检查 notation 输出目录
+        if self.project.output_dir:
+            notation_dir = self.project.output_dir / "notation"
+            if notation_dir.exists() and any(notation_dir.iterdir()):
+                completed.add("乐谱生成")
+
+        # 音色匹配: 检查旋律 stem 是否有匹配结果
+        any_has_matches = any(
+            self.project.stems[s].matched_presets
+            for s in melodic_stems
+            if s in self.project.stems
+        )
+        if any_has_matches:
+            completed.add("音色匹配")
+
+        # 效果器分析: 检查是否有 effects_params_path
+        any_has_effects = any(
+            self.project.stems[s].effects_params_path
+            and self.project.stems[s].effects_params_path.exists()
+            for s in melodic_stems
+            if s in self.project.stems
+        )
+        if any_has_effects:
+            completed.add("效果器分析")
+
+        return completed

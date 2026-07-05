@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import Callable, Optional
 
 import numpy as np
 import pretty_midi
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,6 +52,15 @@ class CleanConfig:
     min_pitch: Optional[int] = None  # 最低 MIDI 音高
     max_pitch: Optional[int] = None  # 最高 MIDI 音高
 
+    # 外部 BPM (优先级高于 MIDI 元数据)
+    external_bpm: Optional[float] = None  # 外部检测的 BPM (如 BeatDetector)
+
+    # 节奏分析 (Phase 1.5)
+    rhythm_validate_enabled: bool = False  # 启用节奏型验证
+    rhythm_min_occurrences: int = 2  # 模式出现次数 ≤ 此值 → 标记
+    section_review_enabled: bool = False  # 启用分段复核
+    section_review_interval: int = 16  # 分段复核的小节间隔
+
 
 @dataclass
 class CleanReport:
@@ -62,6 +74,10 @@ class CleanReport:
     merged_count: int = 0
     estimated_tempo: Optional[float] = None
     estimated_key: Optional[str] = None
+    # 节奏分析统计
+    rhythm_patterns_found: int = 0
+    rhythm_flagged_spurious: int = 0
+    section_warnings: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [
@@ -80,12 +96,17 @@ class CleanReport:
             lines.append(f"  估计速度: {self.estimated_tempo:.0f} BPM")
         if self.estimated_key:
             lines.append(f"  估计调性: {self.estimated_key}")
+        if self.rhythm_patterns_found:
+            lines.append(f"  节奏型: {self.rhythm_patterns_found} 种")
+        if self.rhythm_flagged_spurious:
+            lines.append(f"  标记碎音: {self.rhythm_flagged_spurious}")
         return "\n".join(lines)
 
 
 def clean_midi(
     midi_data: pretty_midi.PrettyMIDI,
     config: Optional[CleanConfig] = None,
+    analysis: Optional[object] = None,  # AnalysisResult (避免循环导入)
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> tuple[pretty_midi.PrettyMIDI, CleanReport]:
     """清洗 MIDI 数据 / Clean and post-process MIDI data.
@@ -93,6 +114,8 @@ def clean_midi(
     Args:
         midi_data: 原始 pretty_midi.PrettyMIDI 对象
         config: 清洗配置 (None = 使用默认)
+        analysis: 节拍分析结果 (BeatDetector 输出),
+                  提供 external BPM、节拍网格和节奏型验证所需的 beat_times
         progress_callback: 进度回调
 
     Returns:
@@ -201,7 +224,7 @@ def clean_midi(
     # ---- 步骤 4: 量化 ----
     if config.quantize_enabled:
         # 以 tempo 计算网格
-        tempo = _estimate_tempo(midi_data)
+        tempo = _estimate_tempo(midi_data, external_bpm=config.external_bpm)
         beat_duration = 60.0 / tempo  # 一拍多少秒
         grid = config.quantize_grid * beat_duration  # 网格大小 (秒)
 
@@ -230,6 +253,71 @@ def clean_midi(
 
     if progress_callback:
         progress_callback(75, "量化完成")
+
+    # ---- 步骤 4.5: 节奏型分析与碎音处理 ----
+    if config.rhythm_validate_enabled and analysis is not None:
+        if progress_callback:
+            progress_callback(80, "提取节奏型...")
+
+        try:
+            from src.core.analysis.rhythm_analyzer import (
+                extract_rhythmic_patterns,
+                flag_spurious_notes,
+                merge_flagged_notes,
+                RhythmReport,
+            )
+
+            # 4.5a: 提取节奏型
+            patterns = extract_rhythmic_patterns(midi_data, analysis)
+            report.rhythm_patterns_found = len(patterns)
+
+            if progress_callback:
+                progress_callback(85, f"发现 {len(patterns)} 种节奏型, 标记碎音...")
+
+            # 4.5b: 标记碎音
+            flagged = flag_spurious_notes(
+                midi_data, patterns,
+                analysis=analysis,
+                min_occurrences=config.rhythm_min_occurrences,
+            )
+            report.rhythm_flagged_spurious = len(flagged)
+
+            if flagged:
+                # 4.5c: 合并碎音
+                merge_flagged_notes(midi_data, flagged, analysis=analysis)
+
+                # 重新收集 notes (被 merge 后 MIDI 内部状态变了)
+                cleaned_notes = []
+                for instr in midi_data.instruments:
+                    cleaned_notes.extend(instr.notes)
+                report.merged_count += len(flagged)
+
+            if progress_callback:
+                progress_callback(
+                    90,
+                    f"标记 {len(flagged)} 个碎音 (共 {len(patterns)} 种节奏型)",
+                )
+
+        except ImportError as e:
+            logger.warning(f"节奏分析模块导入失败: {e}")
+        except Exception as e:
+            logger.warning(f"节奏分析失败: {e}")
+
+    # ---- 步骤 4.6: 分段复核 ----
+    if config.section_review_enabled and analysis is not None:
+        try:
+            from src.core.analysis.rhythm_analyzer import section_review
+
+            warnings = section_review(
+                midi_data, analysis,
+                interval_bars=config.section_review_interval,
+            )
+            report.section_warnings = warnings
+        except Exception as e:
+            logger.warning(f"分段复核失败: {e}")
+
+    if progress_callback:
+        progress_callback(92, "量化+节奏分析完成")
 
     # ---- 步骤 5: 力度归一化 ----
     if config.normalize_velocity and cleaned_notes:
@@ -270,8 +358,20 @@ def clean_midi(
     return cleaned, report
 
 
-def _estimate_tempo(midi_data: pretty_midi.PrettyMIDI) -> float:
-    """从 MIDI 数据估算速度 / Estimate tempo from MIDI."""
+def _estimate_tempo(
+    midi_data: pretty_midi.PrettyMIDI,
+    external_bpm: Optional[float] = None,
+) -> float:
+    """从 MIDI 数据估算速度 / Estimate tempo from MIDI.
+
+    优先级: external_bpm > MIDI 元数据 > 默认 120.
+
+    Args:
+        midi_data: pretty_midi 对象
+        external_bpm: 外部检测的 BPM (如 BeatDetector), 优先使用
+    """
+    if external_bpm is not None:
+        return float(external_bpm)
     tempo_changes = midi_data.get_tempo_changes()
     if len(tempo_changes[1]) > 0:
         return float(tempo_changes[1][0])

@@ -428,7 +428,9 @@ class EffectsChainBuilder:
                     low_pass = sosfilt(sos, result)
                     result = result - low_pass * (1.0 - 10.0**(low_gain/20.0))
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "效果器处理异常 (忽略)", exc_info=True,
+                )
 
         # 高架: 增强或衰减 5kHz 以上
         high_gain = (brightness - 0.5) * 8.0
@@ -443,7 +445,9 @@ class EffectsChainBuilder:
                     high_pass = sosfilt(sos, result)
                     result = result - high_pass * (1.0 - 10.0**(high_gain/20.0))
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "效果器处理异常 (忽略)", exc_info=True,
+                )
 
         return result
 
@@ -483,4 +487,6 @@ class EffectsChainBuilder:
             try:
                 callback(pct, msg)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "效果器处理异常 (忽略)", exc_info=True,
+                )

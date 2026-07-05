@@ -54,6 +54,7 @@ def transcribe(
     maximum_frequency: Optional[float] = None,
     melodia_trick: bool = True,
     midi_tempo: float = 120,
+    bpm: Optional[float] = None,  # 外部检测的 BPM，优先于 midi_tempo
     save_midi: bool = True,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> dict:
@@ -68,7 +69,9 @@ def transcribe(
         minimum_frequency: 最低频率限制 (Hz), None = 不限
         maximum_frequency: 最高频率限制 (Hz), None = 不限
         melodia_trick: 启用 Melodia 补充检测 (推荐)
-        midi_tempo: MIDI 文件速度 (BPM)
+        midi_tempo: MIDI 文件速度 (BPM), 默认 120 (当 bpm 不为 None 时被覆盖)
+        bpm: 外部节拍检测的 BPM (如 BeatDetector), 优先于 midi_tempo.
+            为 None 时使用 midi_tempo 的默认行为。
         save_midi: 是否保存 .mid 文件
         progress_callback: 进度回调 (percent, message)
 
@@ -96,7 +99,7 @@ def transcribe(
         maximum_frequency=maximum_frequency,
         multiple_pitch_bends=False,
         melodia_trick=melodia_trick,
-        midi_tempo=midi_tempo,
+        midi_tempo=bpm if bpm is not None else midi_tempo,
     )
 
     if progress_callback:

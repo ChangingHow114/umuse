@@ -5,6 +5,7 @@ QApplication 初始化、主题加载、主窗口启动。
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -22,6 +23,14 @@ def main() -> int:
     Returns:
         退出码 (0 = 正常退出)
     """
+    from src.config import setup_logging
+
+    # 初始化日志 (GUI 模式: 全部日志写入文件, 控制台仅 ERROR)
+    setup_logging(
+        log_file=Path(__file__).parent.parent.parent / "logs" / "umuse_gui.log",
+        console_level=logging.ERROR,
+    )
+
     # 高 DPI 支持 / High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
